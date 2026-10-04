@@ -1,38 +1,7 @@
-import { EntitySheetHelper, enrichModWithStatusIcons } from "./helper.js";
-import { SotCStatusSheet } from "./status-sheet.js";
+import { EntitySheetHelper } from "./helper.js";
+import { escapeHTML } from "./helper.js";
+import { getNextSort } from "./helper.js";
 import {ATTRIBUTE_TYPES} from "./constants.js";
-
-/**
- * Walk an HTML string, apply enrichModWithStatusIcons only to text nodes,
- * and return the result. This preserves ProseMirror tag structure while
- * still injecting status icons and [+] buttons into visible text content.
- * Running enrichModWithStatusIcons directly on raw HTML corrupts tags because
- * the regex matches inside attribute values and across tag boundaries.
- */
-function _enrichHtmlTextNodes(html, actor) {
-  if (!html) return "";
-  const div = document.createElement("div");
-  div.innerHTML = html;
-
-  function walk(node) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      const enriched = enrichModWithStatusIcons(node.textContent, actor);
-      if (enriched !== node.textContent) {
-        // Replace this text node with a span containing the enriched HTML
-        const span = document.createElement("span");
-        span.innerHTML = enriched;
-        node.parentNode.replaceChild(span, node);
-      }
-    } else if (node.nodeType === Node.ELEMENT_NODE) {
-      // Process children — collect first because replaceChild mutates childNodes
-      const children = [...node.childNodes];
-      for (const child of children) walk(child);
-    }
-  }
-
-  walk(div);
-  return div.innerHTML;
-}
 
 /**
  * Extend the basic ActorSheet with some very simple modifications
@@ -63,23 +32,10 @@ export class SotCActorSheet extends ActorSheet {
     context.dtypes = ATTRIBUTE_TYPES;
 
     // Define our item types
-    context.skills = this.actor.items.filter(i => i.type === "skill");
-    context.egos = this.actor.items.filter(i => i.type === "ego");
-    context.statuses = this.actor.items.filter(i => i.type === "status");
-    // Passives: convert to plain objects so we can safely attach detailsHTML
-    // without mutating live Item documents (which never reach the template).
-    context.passives = this.actor.items
-      .filter(i => i.type === "passive")
-      .map(i => i.toObject());
-
-    // Build the slotted EGO bar data — one entry per risk rank in order
-    const EGO_RANKS = ["zayin", "teth", "heh", "waw", "aleph"];
-    const slots     = context.systemData.ego_slots ?? {};
-    context.egoSlots = EGO_RANKS.map(rank => {
-      const id  = slots[rank] ?? "";
-      const ego = id ? this.actor.items.get(id) : null;
-      return { rank, id, ego: ego ? ego.toObject() : null };
-    });
+    context.skills = this.actor.items.filter(i => i.type === "skill").sort((a, b) => a.sort - b.sort);
+    context.egos = this.actor.items.filter(i => i.type === "ego").sort((a, b) => a.sort - b.sort);
+    context.statuses = this.actor.items.filter(i => i.type === "status").sort((a, b) => a.sort - b.sort);
+    context.passives = this.actor.items.filter(i => i.type === "passive").sort((a, b) => a.sort - b.sort);
 
     // Make these elements from actor-sheet.html render properly. I'm not sure if I even need these, didn't I switch to prosemirrors?
     // Look at this idiot. Not a knower at all. Yeah they're prosemirrors, but they need to have some rendering done for v11-12 (and not for v13)
@@ -89,21 +45,10 @@ export class SotCActorSheet extends ActorSheet {
       context.biographyHTML = context.systemData.biography ?? "";
       context.battle1HTML = context.systemData.battle_ability_1?.details ?? "";
       context.battle2HTML = context.systemData.battle_ability_2?.details ?? "";
-      // Enrich passive details so they render correctly in the actor sheet.
-      // enrichModWithStatusIcons expects plain text, not HTML — running it on
-      // ProseMirror HTML causes it to corrupt tags. Instead we parse the HTML,
-      // walk only text nodes, enrich each one, and re-serialise.
-      for (const passive of context.passives) {
-        passive.detailsHTML = _enrichHtmlTextNodes(passive.system.details ?? "", this.actor);
-      }
     } else {
       context.biographyHTML = await TextEditor.enrichHTML(context.systemData.biography ?? "", {async: true});
       context.battle1HTML = await TextEditor.enrichHTML(context.systemData.battle_ability_1?.details ?? "", {async: true});
       context.battle2HTML = await TextEditor.enrichHTML(context.systemData.battle_ability_2?.details ?? "", {async: true});
-      for (const passive of context.passives) {
-        const enriched = await TextEditor.enrichHTML(passive.system.details ?? "", {async: true});
-        passive.detailsHTML = _enrichHtmlTextNodes(enriched, this.actor);
-      }
     }
     return context;
   }
@@ -113,8 +58,6 @@ export class SotCActorSheet extends ActorSheet {
   /** @inheritdoc */
   activateListeners(html) {
     super.activateListeners(html);
-    // Foundry v13 passes an HTMLElement; wrap in jQuery for backward-compatible .find()
-    html = $(html);
 
     // Everything below here is only needed if the sheet is editable
     if ( !this.isEditable ) return;
@@ -135,17 +78,13 @@ export class SotCActorSheet extends ActorSheet {
     // Haha! And a third one that is very similar!
     html.find(".passive_card-control").click(this._onPassiveControl.bind(this));
 
-    html.find(".skill_card, .passive_card").each((i, card) => {
+    html.find(".skill_card, .passive_card, .status_card, .biography_card, .ego_container").each((i, card) => {
       card.addEventListener("dragstart", ev => this._onDragItem(ev));
     });
 
-    // ── EGO slot bar ────────────────────────────────────────────────────────
-    // Click a filled slot → clear it. Click an empty slot → open picker.
-    html.find(".ego_slot").on("click", ev => this._onEgoSlotClick(ev));
-    // Slot button on an EGO card → slot that EGO into its risk rank slot
-    html.find(".ego-slot-btn").on("click", ev => this._onEgoSlotBtn(ev));
-
     // Time to uhh, finally implement the other part of the system. You can tell what this does, I hope
+    // HEY! HEY IDIOT! You NEED to add excellence and anxieties and stuff. Haha, hahaha.
+    // I'm not doing that righht now. Combat is my priority, everything else is called for so rarely by comparison
     html.find(".roll-might").click(ev => this._onAttributeRoll(ev, "might"));
     html.find(".roll-vitality").click(ev => this._onAttributeRoll(ev, "vitality"));
     html.find(".roll-agility").click(ev => this._onAttributeRoll(ev, "agility"));
@@ -153,6 +92,8 @@ export class SotCActorSheet extends ActorSheet {
     html.find(".roll-instinct").click(ev => this._onAttributeRoll(ev, "instinct"));
     html.find(".roll-persona").click(ev => this._onAttributeRoll(ev, "persona"));
 
+    // Instead of applying stagger like other status effects, here we store the specific round that the stagger
+    // is supposed to end on, storing it in system.stagger_end which is then accessed by combatround to clear stagger when appropriate.
     html.find(".toggle_stagger").on("change", async ev => {
       const checkbox = ev.currentTarget;
       const itemId = checkbox.dataset.itemId;
@@ -173,36 +114,6 @@ export class SotCActorSheet extends ActorSheet {
         });
       }
     });
-
-    /** 
-     * The below function has been temporarily excised because I couldn't get the function it was supporting to work properly. This DID work fine... maybe... I don't know...
-    // Swap display value when input is blurred/focused
-    html.find(".derived-input").each(function () {
-      const $input = $(this);
-
-      function showDerived() {
-        const derived = $input.data("derived");
-        if (derived !== undefined) $input.val(derived);
-      }
-
-      function showRaw() {
-        const base = $input.data("raw");
-        if (base !== undefined) $input.val(base);
-      }
-
-      // When user changes the raw value, keep data-base in sync
-      $input.on("change input", () => {
-        // Only meaningful while focused on raw; still safe otherwise
-        $input.data("base", $input.val());
-      });
-
-      $input.on("focus", showRaw);
-      $input.on("blur", showDerived);
-
-      // Start in derived display mode
-      showDerived();
-    });
-    */
   }
 
   /* -------------------------------------------- */
@@ -217,17 +128,26 @@ export class SotCActorSheet extends ActorSheet {
     event.preventDefault();
     const button = event.currentTarget;
     // Identify the button by its html div, I won't repeat this explanation for my future comments
-    const card = button.closest(".skill_card");
+    //  BUT I will expand on it here. I rather lazily slapped on the remaining of the ego stuff, so now we also need to check for .ego_container for the sake of printing
+    //  There was almost no reason to not just make an _onEGOControl tbh, but here we are.
+    const card = button.closest(".skill_card") ?? button.closest(".ego_container");
     const itemId = card?.dataset.itemId;
     const item = this.actor.items.get(itemId);
 
     // Check for which button is used and in any given case
     if (button.classList.contains("add-skill_card")) {
       const cls = getDocumentClass("Item");
-      return cls.create({name: game.i18n.localize("SOTC.ItemNew"), type: "skill", img: "systems/sotc/assets/Raw Ruina Assets/Pages/default skill icon.png"}, {parent: this.actor});
+      console.table(
+        this.actor.items.map(i => ({
+          name: i.name,
+          type: i.type,
+          sort: i.sort
+        }))
+      );
+      return cls.create({name: game.i18n.localize("SOTC.ItemNew"), type: "skill", img: "systems/sotc/assets/Raw Ruina Assets/Pages/default skill icon.png", sort: getNextSort(this.actor, "skill")}, {parent: this.actor});
     } else if (button.classList.contains("add-ego_card")) {
       const cls = getDocumentClass("Item");
-      return cls.create({name: game.i18n.localize("SOTC.ItemNew"), type: "ego", img: "systems/sotc/assets/Raw Ruina Assets/Pages/default skill icon.png"}, {parent: this.actor});
+      return cls.create({name: game.i18n.localize("SOTC.ItemNew"), type: "ego", img: "systems/sotc/assets/Raw Ruina Assets/Pages/default skill icon.png", sort: getNextSort(this.actor, "ego")}, {parent: this.actor});
     }
 
     if (!item) {
@@ -237,7 +157,7 @@ export class SotCActorSheet extends ActorSheet {
 
     // Open up the sheet for the skill/ego that is being edited
     if (button.classList.contains("edit-skill_card")) {
-      return item.sheet.render({ force: true });
+      return item.sheet.render(true);
     }
 
     // This function is also meant to let you move your skills to the back of the list, for reorganizing since we currently can't drag them around
@@ -250,113 +170,36 @@ export class SotCActorSheet extends ActorSheet {
     // I should probably add a dialog option that gives a warning or requests a confirmation. Missclicking this would suck major major
     if (button.classList.contains("delete-skill_card")) {
       return Dialog.confirm({
-        title: "Delete Status?",
+        title: "Delete Skill?",
         content: `<p>Are you sure you want to delete <strong>${item.name}</strong>?</p>`,
         yes: () => item.delete(),
         no: () => {},
         defaultYes: false,
       });
     }
+
+    if (button.classList.contains("print-ego_passive")) {
+      const name = item.name;
+      const passive_name = item.system.passive_name ?? "";
+      const passive = item.system.passive ?? "";
+
+      // Again (though I guess I say this below, huh), the styling is simple for now
+      const content = `
+        <div class="sotc-passive-card">
+          <h3 style="margin-bottom: 4px; color: white; text-shadow: 0 0 5px #efc281, 0 0 5px #efc281;"><b>E.G.O</b> - ${name}</h3>
+          <div style="margin-bottom: 4px; color: white; text-shadow: 0 0 5px #efc281, 0 0 5px #efc281;"><b>Passive:</b> ${passive_name}</div>
+          <div class="sotc-passive-details">${passive}</div>
+        </div>
+      `;
+      return ChatMessage.create({
+        user: game.user.id,
+        speaker: ChatMessage.getSpeaker({ actor: item.actor }),
+        content
+      });
+    }
   }
 
   /* -------------------------------------------- */
-
-  /** Slot bar click — toggle slot or open picker */
-  async _onEgoSlotClick(ev) {
-    ev.preventDefault();
-    const rank    = ev.currentTarget.dataset.rank;
-    const current = this.actor.system.ego_slots?.[rank] ?? "";
-
-    if (current) {
-      // Filled — clear on click
-      await this.actor.update({ [`system.ego_slots.${rank}`]: "" });
-    } else {
-      // Empty — pick from egos that match this risk rank (case-insensitive)
-      const candidates = this.actor.items.filter(i =>
-        i.type === "ego" &&
-        (i.system.risk ?? "").toLowerCase().startsWith(rank.toLowerCase())
-      );
-
-      if (!candidates.length) {
-        return ui.notifications.warn(`No EGO with risk rank "${rank}" found on this actor.`);
-      }
-
-      // If only one candidate, slot it immediately
-      if (candidates.length === 1) {
-        return this.actor.update({ [`system.ego_slots.${rank}`]: candidates[0].id });
-      }
-
-      // Multiple candidates — show a small picker dialog
-      const options = candidates.map(e =>
-        `<option value="${e.id}">${e.name}</option>`
-      ).join("");
-      new Dialog({
-        title: `Slot ${rank.charAt(0).toUpperCase() + rank.slice(1)} EGO`,
-        content: `<div style="padding:8px;">
-          <label style="display:block;margin-bottom:6px;color:#c9a227;">Choose an EGO to slot:</label>
-          <select id="ego-slot-pick" style="width:100%;">${options}</select>
-        </div>`,
-        buttons: {
-          slot: {
-            icon: '<i class="fas fa-compress-arrows-alt"></i>',
-            label: "Slot",
-            callback: html => {
-              const id = html.find("#ego-slot-pick").val();
-              this.actor.update({ [`system.ego_slots.${rank}`]: id });
-            }
-          },
-          clear: {
-            icon: '<i class="fas fa-times"></i>',
-            label: "Clear slot",
-            callback: () => this.actor.update({ [`system.ego_slots.${rank}`]: "" })
-          }
-        },
-        default: "slot"
-      }).render({ force: true });
-    }
-  }
-
-  /** Slot button on an EGO card — reads the risk field and slots into that rank */
-  async _onEgoSlotBtn(ev) {
-    ev.preventDefault();
-    ev.stopPropagation();
-    const itemId = ev.currentTarget.dataset.itemId;
-    const item   = this.actor.items.get(itemId);
-    if (!item) return;
-
-    const EGO_RANKS   = ["zayin", "teth", "heh", "waw", "aleph"];
-    const riskRaw     = (item.system.risk ?? "").toLowerCase().trim();
-    const matchedRank = EGO_RANKS.find(r => riskRaw.startsWith(r));
-
-    if (!matchedRank) {
-      // Risk field doesn't match a known rank — ask which slot to use
-      const options = EGO_RANKS.map(r =>
-        `<option value="${r}">${r.charAt(0).toUpperCase() + r.slice(1)}</option>`
-      ).join("");
-      new Dialog({
-        title: `Slot "${item.name}"`,
-        content: `<div style="padding:8px;">
-          <p style="color:#aaa;margin-bottom:8px;">Risk rank not recognised. Choose a slot:</p>
-          <select id="ego-rank-pick" style="width:100%;">${options}</select>
-        </div>`,
-        buttons: {
-          slot: {
-            icon: '<i class="fas fa-compress-arrows-alt"></i>',
-            label: "Slot",
-            callback: html => {
-              const rank = html.find("#ego-rank-pick").val();
-              this.actor.update({ [`system.ego_slots.${rank}`]: item.id });
-            }
-          },
-          cancel: { icon: '<i class="fas fa-times"></i>', label: "Cancel" }
-        },
-        default: "slot"
-      }).render({ force: true });
-    } else {
-      await this.actor.update({ [`system.ego_slots.${matchedRank}`]: item.id });
-      ui.notifications.info(`${item.name} slotted as ${matchedRank.charAt(0).toUpperCase() + matchedRank.slice(1)} EGO.`);
-    }
-  }
 
   async _onRollFullSkill(event) {
     event.preventDefault();
@@ -368,7 +211,7 @@ export class SotCActorSheet extends ActorSheet {
     if (!item) {
       return ui.notifications.warn("Oh buddy, I don't know if this is worse than the other error. Your item is missing??? Tell me about it...");
     }
-    // I fucked up somewhere along the line and have violated our template.json structure
+    // I MESSED (no cursing meanie (me)) up somewhere along the line and have violated our template.json structure
     // So now we end up with an object storing our die instead of an array. I'll surely come back and fix this at some point, right? Haha.
     const diceObject = item.system.dice?.die ?? {};
     const diceArray = Array.isArray(diceObject) ? diceObject : Object.values(diceObject);
@@ -400,14 +243,7 @@ export class SotCActorSheet extends ActorSheet {
             const light_costLine = `<p><strong>Light Cost:</strong> ${light_cost}</p>`;
             const weight = item.system.weight;
             const weightLine = weight > 1 ? `<p><strong>Attack Weight:</strong> ${weight}</p>` : "";
-            const skillModulesArray = Array.isArray(skillModules)
-              ? skillModules
-              : (typeof skillModules === "string" ? skillModules.split("\n").map(s => s.trim()).filter(Boolean) : []);
-            const skillModulesMain  = skillModulesArray.filter(m => !/^\[after use\]/i.test(m.trim()));
-            const skillModulesAfter = skillModulesArray.filter(m =>  /^\[after use\]/i.test(m.trim()));
-            const renderModLines = arr => arr.map(m => `<div style="margin-bottom:2px;">${enrichModWithStatusIcons(m, this.actor)}</div>`).join("");
-            const skillModulesLine      = skillModulesMain.length  ? `<div class="skill-modules">${renderModLines(skillModulesMain)}</div>`  : "";
-            const skillModulesAfterLine = skillModulesAfter.length ? `<div class="skill-modules skill-modules-after">${renderModLines(skillModulesAfter)}</div>` : "";
+            const skillModulesLine = skillModules ? `<div class="skill-modules" style="white-space: pre-wrap;">${skillModules}</div>` : "";
 
             // Non-Optional. This is why you're printing the skill, obviously it's not optional? Are you stupid?
             const diceSummaries = dice.map(die => {
@@ -416,7 +252,7 @@ export class SotCActorSheet extends ActorSheet {
               const formula = die.formula;
               const modules = Object.values(die.mods ?? {});
               const moduleLine = modules.length
-                ? `<div style="margin-top: 4px; font-size: 12px;"><em>${modules.map(m => `<div style="margin-left: 5px; ">• ${enrichModWithStatusIcons(m, this.actor)}</div>`).join("")}</em></div>`
+                ? `<div style="margin-top: 4px; font-size: 12px;"><em>${modules.map(m => `<div style="margin-left: 5px;">• ${m}</div>`).join("")}</em></div>`
                 : "";
               return `
                 <div style="margin-bottom: 5px;">
@@ -433,20 +269,31 @@ export class SotCActorSheet extends ActorSheet {
 
             const messageContent = `
               <div class="skill-declaration">
-                <h3>${item.name}</h3>
+                <h3 style="margin-bottom: 4px; color: white; text-shadow: 0 0 5px #efc281, 0 0 5px #efc281;">${item.name}</h3>
                 ${light_costLine}
                 ${weightLine}
                 ${skillModulesLine}
                 <p><strong>Dice:</strong></p>
                 ${diceSummaries}
-                ${skillModulesAfterLine}
               </div>
             `;
 
             ChatMessage.create({
-              speaker: ChatMessage.getSpeaker({ actor: this.actor }),
+              speaker: ChatMessage.getSpeaker({ 
+                actor: this.actor,
+                token: this.token,
+                scene: this.scene
+              }),
               content: messageContent,
-              type: CONST.CHAT_MESSAGE_TYPES.OTHER
+              type: CONST.CHAT_MESSAGE_TYPES.OTHER,
+              sound: CONFIG.sounds.dice,
+              flags: {
+                sotc: {
+                  emotion: {
+                    given: 0
+                  }
+                }
+              }
             });
           }
         },
@@ -492,11 +339,20 @@ export class SotCActorSheet extends ActorSheet {
               // Apply modifiers from status effects
               status_mod += this.actor.system.modifiers.all_mod;
 
+              if (["slash", "pierce", "blunt", "block", "evade"].includes(die.type)) {
+                status_mod += this.actor.system.modifiers.nc_all_mod;
+              }
               if (["slash", "pierce", "blunt", "counter-slash", "counter-pierce", "counter-blunt"].includes(die.type)) {
                 status_mod += this.actor.system.modifiers.off_mod;
               }
+              if (["slash", "pierce", "blunt"].includes(die.type)) {
+                status_mod += this.actor.system.modifiers.nc_off_mod;
+              }
               if (["block", "evade", "counter-block", "counter-evade"].includes(die.type)) {
                 status_mod += this.actor.system.modifiers.def_mod;
+              }
+              if (["block", "evade"].includes(die.type)) {
+                status_mod += this.actor.system.modifiers.nc_def_mod;
               }
               if (["slash", "counter-slash"].includes(die.type)) {
                 status_mod += this.actor.system.modifiers.slash_mod;
@@ -533,22 +389,30 @@ export class SotCActorSheet extends ActorSheet {
                 let total = numDice * 1 + baseMod + mod + status_mod;
                 // Stylistically show the paralysis or poise when its rolled.
                 roll = await new Roll(`${total}`).roll({ async: true });
-                formulaForDisplay = `${formulaForDisplay} = ${roll.total}`;
+                formulaForDisplay = `${formulaForDisplay} = <span style="color: #757580; margin-left:2px;">${roll.total} <i class="fa-solid fa-heart-crack" style="margin-left: 2px;"></i></span>`;
                 formulaForDisplay = `<div style="display: flex;"><img src="systems/sotc/assets/statuses/Paralyze.png" title="Paralyze" style="height: 20px; width: 20px; vertical-align: middle; margin-right: 3px; border: none; filter: drop-shadow(1px 1px 2px black)">(${numDice}d${dieSize}) + ${baseMod}${formulaForDisplay}</div>`;
               } else if (poise) {
                 let total = numDice * dieSize + baseMod + mod + status_mod;
                 roll = await new Roll(`${total}`).roll({ async: true });
-                formulaForDisplay = `${formulaForDisplay} = ${roll.total}`;
+                formulaForDisplay = `${formulaForDisplay} = <span style="margin-left:2px;">${roll.total} <i class="fa-solid fa-crosshairs" style="margin-left: 2px;"></i></span>`;
                 formulaForDisplay = `<div style="display: flex;"><img src="systems/sotc/assets/statuses/Poise.png" title="Poise" style="height: 20px; width: 20px; vertical-align: middle; margin-right: 3px; border: none; filter: drop-shadow(1px 1px 2px black)">(${numDice}d${dieSize}) + ${baseMod}${formulaForDisplay}</div>`;
               } else {
                 let formula = `${numDice}d${dieSize} + ${baseMod} + ${mod} + ${status_mod}`;
                 // I've had it suggested that maybe this shouldn't be shown at all. I might take that into consideration eventually
                 roll = await new Roll(formula).roll({ async: true });
-                formulaForDisplay = `${formulaForDisplay} = ${roll.total}`;
+                let max_roll = numDice * dieSize + baseMod + mod + status_mod;
+                let min_roll = numDice * 1 + baseMod + mod + status_mod;
+                if (roll.total === max_roll) {
+                  formulaForDisplay = `${formulaForDisplay} = <span style="margin-left:4px;">${roll.total} <i class="fa-solid fa-crosshairs" style="margin-left: 2px;"></i></span>`;
+                } else if (roll.total === min_roll) {
+                  formulaForDisplay = `${formulaForDisplay} = <span style="color: #757580; margin-left:4px;">${roll.total} <i class="fa-solid fa-heart-crack" style="margin-left: 2px;"></i></span>`;
+                } else {
+                  formulaForDisplay = `${formulaForDisplay} = ${roll.total}`;
+                }
                 formulaForDisplay = `${numDice}d${dieSize} + ${baseMod}${formulaForDisplay}`;
               }
 
-              results.push({die, dieIndex: i, roll, formulaForDisplay, mod, status_mod});
+              results.push({die, roll, formulaForDisplay, mod, status_mod});
             }
 
             // Optional info: weight, modules
@@ -559,26 +423,18 @@ export class SotCActorSheet extends ActorSheet {
             const weight = item.system.weight;
 
             const weightLine = weight > 1 ? `<p><strong>Attack Weight:</strong> ${weight}</p>` : "";
-            const skillModulesArray = Array.isArray(skillModules)
-              ? skillModules
-              : (typeof skillModules === "string" ? skillModules.split("\n").map(s => s.trim()).filter(Boolean) : []);
-            const skillModulesMain  = skillModulesArray.filter(m => !/^\[after use\]/i.test(m.trim()));
-            const skillModulesAfter = skillModulesArray.filter(m =>  /^\[after use\]/i.test(m.trim()));
-            const renderModLines = arr => arr.map(m => `<div style="margin-bottom:2px;">${enrichModWithStatusIcons(m, this.actor)}</div>`).join("");
-            const skillModulesLine      = skillModulesMain.length  ? `<div class="skill-modules">${renderModLines(skillModulesMain)}</div>`  : "";
-            const skillModulesAfterLine = skillModulesAfter.length ? `<div class="skill-modules skill-modules-after">${renderModLines(skillModulesAfter)}</div>` : "";
+            const skillModulesLine = skillModules ? `<div class="skill-modules" style="white-space: pre-wrap;">${skillModules}</div>` : "";
 
             // Dice display
-            const diceSummaries = results.map(({ die, dieIndex, roll, formulaForDisplay, mod, status_mod }) => {
+            const diceSummaries = results.map(({ die, roll, formulaForDisplay, mod, status_mod }) => {
               const icon = `systems/sotc/assets/dice types/${die.type}.png`;
               const colorClass = `die-color-${die.type}`;
               const modules = Object.values(die.mods ?? {});
               const moduleLine = modules.length
-                ? `<div style="margin-top: 4px; font-size: 12px;"><em>${modules.map(m => `<div style="margin-left: 5px; ">• ${enrichModWithStatusIcons(m, this.actor)}</div>`).join("")}</em></div>`
+                ? `<div style="margin-top: 4px; font-size: 12px;"><em>${modules.map(m => `<div style="margin-left: 5px;">• ${m}</div>`).join("")}</em></div>`
                 : "";
               const payload = {
                 dieType: die.type,
-                dieIndex: dieIndex,
                 total: roll.total,
                 actorId: this.actor.id,
                 itemId: item.id,
@@ -602,13 +458,13 @@ export class SotCActorSheet extends ActorSheet {
                         data-color="die-color-${die.type}"
                         data-modules='${JSON.stringify(Object.values(die.mods ?? {}))}'
                         data-itemname="${item.name}"
-                        style="width: 16px; height: 16px; color: black; margin-left: 8px; margin-top: 4px;">
+                        style="width: 16px; height: 16px; color: #efc281; margin-left: 16px; margin-top: 4px;">
                         <i class="fas fa-rotate-left"></i>
                       </a>
                       <a class="resolve-die"
                         title="Apply Die!"
-                        data-payload='${JSON.stringify(payload)}'
-                        style="width: 16px; height: 16px; color: black; margin-left: 8px; margin-top: 4px;">
+                        data-payload="${escapeHTML(JSON.stringify(payload))}"
+                        style="width: 16px; height: 16px; color: #efc281; margin-left: 8px; margin-top: 4px;">
                         <i class="fas fa-bolt"></i>
                       </a>
                     </div>
@@ -620,39 +476,26 @@ export class SotCActorSheet extends ActorSheet {
 
             const flavor = `
               <div class="skill-roll-summary">
-                <h3>${item.name}</h3>
+                <h3 style="margin-bottom: 4px; color: white; text-shadow: 0 0 5px #efc281, 0 0 5px #efc281;">${item.name}</h3>
                 ${light_costLine}
                 ${weightLine}
                 ${skillModulesLine}
                 <p><strong>Dice Rolled:</strong></p>
                 ${diceSummaries}
-                ${skillModulesAfterLine}
+                <div style="display: flex;width: 100%;justify-content: center;">
+                  <a class="give_emotion" style="display: flex; flex-direction: column; width: 80%; height: auto; color: #efc281; 
+                                                  background-color: black; border: 1px solid #efc281; border-radius: 8px; justify-self: center; 
+                                                  box-shadow: #efc281 0 0 5px; margin-top: 10px; text-align: center; justify-content: center;">
+                  <div style="font-size: 12px; margin-top: 4px;">Give ${this.actor.name} 1 Emotion Point.</div>
+                  <div class="emotion_counter" style="font-size: 10px; margin-bottom: 4px; line-height: 1;"></div>
+                  </a>
+                </div>
                 <hr>
-                <a class="toggle-roll-details" style="cursor: pointer; font-size: 12px; color: #888;">
+                <a class="toggle-roll-details" style="cursor: pointer; font-size: 12px;">
                   ⯈ Show Roll Details
                 </a>
               </div>
             `;
-
-            let chatMessageId;
-
-            Hooks.once("renderChatMessage", (message, html) => {
-              if (message.id !== chatMessageId) return;
-
-              const diceRolls = html.find(".dice-roll");
-              if (diceRolls.length) {
-                const wrapper = $(`<div class="roll-details-wrapper" style="display: none;"></div>`);
-                diceRolls.wrapAll(wrapper);
-
-                const toggleLink = html.find(".toggle-roll-details");
-                toggleLink.on("click", () => {
-                  const wasHidden = html.find(".roll-details-wrapper").is(":hidden");
-                  html.find(".roll-details-wrapper").toggle();
-                  toggleLink.html(wasHidden ? "⯆ Hide Roll Details" : "⯈ Show Roll Details");
-                  toggleLink.toggleClass("open", wasHidden);
-                });
-              }
-            });
 
             await (async () => {
               const actor = this.actor;
@@ -681,6 +524,13 @@ export class SotCActorSheet extends ActorSheet {
                   await item.update({ "system.limit.value": newUses });
                 }
 
+                // Ego passive activationstatus_card
+                if (item.type === "ego") {
+                  console.log("trying to update item")
+                  await item.update({"system.is_active": true });
+                }
+
+
                 if (Object.keys(updates).length > 0) {
                   await actor.update(updates);
                 }
@@ -688,15 +538,26 @@ export class SotCActorSheet extends ActorSheet {
             })();
 
             const chatMessage = await ChatMessage.create({
-              speaker: ChatMessage.getSpeaker({ actor: this.actor }),
+              speaker: ChatMessage.getSpeaker({ 
+                actor: this.actor,
+                token: this.token,
+                scene: this.scene
+              }),
               flavor,
               rolls: results.map(r => r.roll),
               type: CONST.CHAT_MESSAGE_TYPES.ROLL,
               rollMode: game.settings.get("core", "rollMode"),
-              sound: CONFIG.sounds.dice
+              sound: CONFIG.sounds.dice,
+              flags: {
+                sotc: {
+                  emotion: {
+                    given: 0
+                  },
+                  roll_details_open: false
+                }
+              }
             });
 
-            chatMessageId = chatMessage.id;
           }
         },
         cancel: {
@@ -769,11 +630,20 @@ export class SotCActorSheet extends ActorSheet {
             // Apply modifiers from status effects
             status_mod += this.actor.system.modifiers.all_mod;
 
+            if (["slash", "pierce", "blunt", "block", "evade"].includes(die.type)) {
+              status_mod += this.actor.system.modifiers.nc_all_mod;
+            }
             if (["slash", "pierce", "blunt", "counter-slash", "counter-pierce", "counter-blunt"].includes(die.type)) {
               status_mod += this.actor.system.modifiers.off_mod;
             }
+            if (["slash", "pierce", "blunt"].includes(die.type)) {
+              status_mod += this.actor.system.modifiers.nc_off_mod;
+            }
             if (["block", "evade", "counter-block", "counter-evade"].includes(die.type)) {
               status_mod += this.actor.system.modifiers.def_mod;
+            }
+            if (["block", "evade"].includes(die.type)) {
+              status_mod += this.actor.system.modifiers.nc_def_mod;
             }
             if (["slash", "counter-slash"].includes(die.type)) {
               status_mod += this.actor.system.modifiers.slash_mod;
@@ -808,30 +678,36 @@ export class SotCActorSheet extends ActorSheet {
             if (paralysis) {
               let total = numDice * 1 + baseMod + mod + status_mod;
               roll = await new Roll(`${total}`).roll({ async: true });
-              formulaForDisplay = `${formulaForDisplay} = ${roll.total}`;
+              formulaForDisplay = `${formulaForDisplay} = <span style="color: #757580; margin-left:2px;">${roll.total} <i class="fa-solid fa-heart-crack" style="margin-left: 2px;"></i></span>`;
               formulaForDisplay = `<div style="display: flex;"><img src="systems/sotc/assets/statuses/Paralyze.png" title="Paralyze" style="height: 20px; width: 20px; vertical-align: middle; margin-right: 3px; border: none; filter: drop-shadow(1px 1px 2px black)">(${numDice}d${dieSize}) + ${baseMod}${formulaForDisplay}</div>`;
             } else if (poise) {
               let total = numDice * dieSize + baseMod + mod + status_mod;
               roll = await new Roll(`${total}`).roll({ async: true });
-              formulaForDisplay = `${formulaForDisplay} = ${roll.total}`;
+              formulaForDisplay = `${formulaForDisplay} = <span style="margin-left:2px;">${roll.total} <i class="fa-solid fa-crosshairs" style="margin-left: 2px;"></i></span>`;
               formulaForDisplay = `<div style="display: flex;"><img src="systems/sotc/assets/statuses/Poise.png" title="Poise" style="height: 20px; width: 20px; vertical-align: middle; margin-right: 3px; border: none; filter: drop-shadow(1px 1px 2px black)">(${numDice}d${dieSize}) + ${baseMod}${formulaForDisplay}</div>`;
             } else {
               let formula = `${numDice}d${dieSize} + ${baseMod} + ${mod} + ${status_mod}`;
-              // I've had it suggested that maybe this shouldn't be shown at all. I might take that into consideration eventually
               roll = await new Roll(formula).roll({ async: true });
-              formulaForDisplay = `${formulaForDisplay} = ${roll.total}`;
+              let max_roll = numDice * dieSize + baseMod + mod + status_mod;
+              let min_roll = numDice * 1 + baseMod + mod + status_mod;
+              if (roll.total === max_roll) {
+                formulaForDisplay = `${formulaForDisplay} = <span style="margin-left: 4px;">${roll.total} <i class="fa-solid fa-crosshairs" style="margin-left: 2px;"></i></span>`;
+              } else if (roll.total === min_roll) {
+                formulaForDisplay = `${formulaForDisplay} = <span style="color: #757580; margin-left: 4px;">${roll.total} <i class="fa-solid fa-heart-crack" style="margin-left: 2px;"></i></span>`;
+              } else {
+                formulaForDisplay = `${formulaForDisplay} = ${roll.total}`;
+              }
               formulaForDisplay = `${numDice}d${dieSize} + ${baseMod}${formulaForDisplay}`;
             }
 
             // Module display
             const modules = Object.values(die.mods ?? {});
             const moduleLine = modules.length
-              ? `<div style="margin-top: 4px; font-size: 12px;"><em>${modules.map(m => `<div style="margin-left: 5px; ">• ${enrichModWithStatusIcons(m, this.actor)}</div>`).join("")}</em></div>`
+              ? `<div style="margin-top: 4px; font-size: 12px;"><em>${modules.map(m => `<div style="margin-left: 5px;">• ${m}</div>`).join("")}</em></div>`
               : "";
 
             const payload = {
               dieType: die.type,
-              dieIndex: i,
               total: roll.total,
               actorId: this.actor.id,
               itemId: item.id,
@@ -844,7 +720,7 @@ export class SotCActorSheet extends ActorSheet {
             const colorClass = `die-color-${die.type}`;
             const flavor = `
               <div class="skill-die-roll">
-                <h3>${item.name}</h3>
+                <h3 style="margin-bottom: 4px; color: white; text-shadow: 0 0 5px #efc281, 0 0 5px #efc281;">${item.name}</h3>
                 <div style="margin-left:5px; margin-bottom:5px;">
                   <span class="${colorClass}" style="margin-left: 5px; vertical-align: middle; font-size: 16px;">
                     <div style="display: flex; gap: 4px;">
@@ -859,40 +735,60 @@ export class SotCActorSheet extends ActorSheet {
                         data-color="die-color-${die.type}"
                         data-modules='${JSON.stringify(Object.values(die.mods ?? {}))}'
                         data-itemname="${item.name}"
-                        style="width: 16px; height: 16px; color: black; margin-left: 8px; margin-top: 4px;">
+                        style="width: 16px; height: 16px; color: #efc281; margin-left: 16px; margin-top: 4px;">
                         <i class="fas fa-rotate-left"></i>
                       </a>
                       <a class="resolve-die"
                         title="Apply Die!"
-                        data-payload='${JSON.stringify(payload)}'
-                        style="width: 16px; height: 16px; color: black; margin-left: 8px; margin-top: 4px;">
+                        data-payload="${escapeHTML(JSON.stringify(payload))}"
+                        style="width: 16px; height: 16px; color: #efc281; margin-left: 8px; margin-top: 4px;">
                         <i class="fas fa-bolt"></i>
                       </a>
                     </div>
                   </span>
                   ${moduleLine ? `${moduleLine}` : ""}
                 </div>
+                <div style="display: flex;width: 100%;justify-content: center;">
+                  <a class="give_emotion" style="display: flex; flex-direction: column; width: 80%; height: auto; color: #efc281; 
+                                                  background-color: black; border: 1px solid #efc281; border-radius: 8px; justify-self: center; 
+                                                  box-shadow: #efc281 0 0 5px; margin-top: 10px; text-align: center; justify-content: center; margin-bottom: 8px;">
+                    <div style="font-size: 12px; margin-top: 4px;">Give ${this.actor.name} 1 Emotion Point.</div>
+                    <div class="emotion_counter" style="font-size: 10px; margin-bottom: 4px; line-height: 1;"></div>
+                  </a>
+                </div>
               </div>
             `;
             await roll.toMessage({
-              speaker: ChatMessage.getSpeaker({ actor: this.actor }),
+              speaker: ChatMessage.getSpeaker({ 
+                actor: this.actor,
+                token: this.token,
+                scene: this.scene
+              }),
               flavor: flavor,
               rolls: [roll],
               type: CONST.CHAT_MESSAGE_TYPES.ROLL,
               rollMode: game.settings.get("core", "rollMode"),
-              sound: CONFIG.sounds.dice
+              sound: CONFIG.sounds.dice,
+              flags: {
+                sotc: {
+                  emotion: {
+                    given: 0
+                  }
+                }
+              }
             });
           });
         });
       }
     }, {
       classes: ["sotc_skill_roll_dialog"]  // allows our custom black background styling
-    }).render({ force: true });
+    }).render(true);
   }
+
   /* -------------------------------------------- */
   // Controls for our status buttons, basically just like the above with a modification for the status cards because the html formatting ain't vibing
 
-  async _onStatusControl(event) {
+  _onStatusControl(event) {
     event.preventDefault();
     const button = event.currentTarget;
     const card = button.closest(".status_card");
@@ -910,7 +806,7 @@ export class SotCActorSheet extends ActorSheet {
       else if (container?.classList.contains("boons")) type = "boon";
       else if (container?.classList.contains("ailments")) type = "ailment";
       else if (container?.classList.contains("other")) type = "other";
-      return this.actor.createEmbeddedDocuments("Item", [{name: game.i18n.localize("SOTC.ItemNew"),type: "status", img: "systems/sotc/assets/statuses/Default.png", system: {types: type}}]);
+      return this.actor.createEmbeddedDocuments("Item", [{name: game.i18n.localize("SOTC.ItemNew"),type: "status", img: "systems/sotc/assets/statuses/Default.png", system: {types: type}, sort: getNextSort(this.actor, "status")}]);
     }
 
     if (!item) {
@@ -919,30 +815,24 @@ export class SotCActorSheet extends ActorSheet {
     }
 
     if (button.classList.contains("edit-status_card")) {
-      console.log("SOTC STATUS | edit button clicked", {
-        itemId, itemName: item?.name, itemType: item?.type,
-        editable: this.isEditable,
-        sheet: !!item.sheet,
-        sheetClass: item.sheet?.constructor?.name,
-        sheetState: item.sheet?._state
-      });
-      try {
-        await item.sheet.render({ force: true });
-        console.log("SOTC STATUS | render() call returned without throwing");
-      } catch(err) {
-        console.error("SOTC STATUS | render() THREW:", err);
-        ui.notifications.error("Status sheet failed to open: " + err.message);
-      }
-      return;
+      return item.sheet.render(true);
     }
 
     if (button.classList.contains("print-status_card")) {
       const sheet = item.sheet;
-      if (sheet && typeof sheet._printStatus === "function") {
-        return sheet._printStatus(event);
+      if (this.actor.system.status_print_style === "special_only") {
+        if (sheet && typeof sheet._printStatusDetails === "function") {
+          return sheet._printStatusDetails(event);
+        }
+        ui.notifications.warn("This status does not have a printable sheet.");
+        return;
+      } else {
+        if (sheet && typeof sheet._printStatus === "function") {
+          return sheet._printStatus(event);
+        }
+        ui.notifications.warn("This status does not have a printable sheet.");
+        return;
       }
-      ui.notifications.warn("This status does not have a printable sheet.");
-      return;
     }
 
     if (button.classList.contains("duplicate-status_card")) {
@@ -980,6 +870,7 @@ export class SotCActorSheet extends ActorSheet {
     const flat_change = Number(item.system.potency_flat ?? 0)
     const potency = Number(item.system.potency ?? 1);
     const count = Number(item.system.count ?? 0);
+    const min_stat = Number(item.system.min_stat ?? -999)
     let delta = 0
     if (count) {
       delta = count * potency + flat_change;
@@ -991,46 +882,30 @@ export class SotCActorSheet extends ActorSheet {
     // So yeah this in particular is a little bit excessive, but it works fine
     if (post_active.operator === "sinking_deluge") {
       if (item.system.target !== "stagger") {
-        console.log("Sinking Deluge is supposed to target stagger! Find actor-sheet.js lines ~780 if you wanna mess around.")
+        console.log("Sinking Deluge is supposed to target stagger! Find actor-sheet.js lines ~850 if you wanna mess around.")
       } if (sign !== -1) {
-        console.log("Sinking Deluge is supposed to SUBTRACT stagger! Find actor-sheet.js lines ~780 if you wanna mess around.")
+        console.log("Sinking Deluge is supposed to SUBTRACT stagger! Find actor-sheet.js lines ~850 if you wanna mess around.")
       }
-      const curr = this.actor.system.stagger.value;
-      delta *= 3;
-      // How much stagger would remain after applying the full delta (sign is -1, so curr - delta)
-      const staggerResult = curr + delta * sign;
-      if (staggerResult < 0) {
-        // Stagger hits 0; for every 3 overflow beyond that, deal 2 HP damage
-        const overflow = Math.abs(staggerResult);
-        const hp_damage = Math.floor(overflow / 3) * 2;
-        updates["system.stagger.value"] = 0;
-        if (hp_damage > 0) {
-          updates["system.health.value"] = (this.actor.system.health.value ?? 0) - hp_damage;
-        }
+      const curr = Number(this.actor.system.stagger.value);
+      delta *= 3
+      delta = Math.floor(delta)
+      let hp_delta = 0
+      hp_delta = Math.trunc(Math.min(0, curr + delta * sign) / 2)
+      if (hp_delta) {
+        updates["system.stagger.value"] = 0
+        updates["system.health.value"] = (Number(this.actor.system.health.value) ?? 0) + hp_delta
       } else {
-        updates["system.stagger.value"] = staggerResult;
+        updates["system.stagger.value"] = (Number(this.actor.system.stagger.value) ?? 0) + (delta * sign);
       }
     } else {
+      delta = Math.floor(delta)
       if (item.system.target === "hp" || item.system.target === "hp_stagger") {
-        updates["system.health.value"] = (this.actor.system.health.value ?? 0) + (delta * sign);
+        updates["system.health.value"] = Math.max((Number(this.actor.system.health.value) ?? 0) + (delta * sign), min_stat);
       }
       if (item.system.target === "stagger" || item.system.target === "hp_stagger") {
-        updates["system.stagger.value"] = (this.actor.system.stagger.value ?? 0) + (delta * sign);
+        updates["system.stagger.value"] = Math.max((Number(this.actor.system.stagger.value) ?? 0) + (delta * sign), min_stat);
       }
     }
-    // Apply clamp_min if set (always for stagger targets)
-    const minResourceLimit = Number(post_active.min_resource_limit ?? 0);
-    if (item.system.target === "hp" || item.system.target === "hp_stagger") {
-      const newHp = updates["system.health.value"] ?? (this.actor.system.health.value ?? 0);
-      updates["system.health.value"] = Math.max(minResourceLimit, newHp);
-    }
-    if (item.system.target === "stagger" || item.system.target === "hp_stagger") {
-      let newStagger = updates["system.stagger.value"] ?? (this.actor.system.stagger.value ?? 0);
-      // Clamp to min_resource_limit stored on this trigger entry (0 = no floor, e.g. Deluge can reduce to 0)
-      newStagger = Math.max(minResourceLimit, newStagger);
-      updates["system.stagger.value"] = newStagger;
-    }
-
     if (Object.keys(updates).length > 0) {
       this.actor.update(updates);
     }
@@ -1067,10 +942,10 @@ export class SotCActorSheet extends ActorSheet {
 
     if (button.classList.contains("add-passive_card")) {
       const cls = getDocumentClass("Item");
-      return this.actor.createEmbeddedDocuments("Item", [{name: game.i18n.localize("SOTC.ItemNew"),type: "passive", system: {type: "passive"}}]);
+      return this.actor.createEmbeddedDocuments("Item", [{name: game.i18n.localize("SOTC.ItemNew"),type: "passive", system: {type: "passive"}, sort: getNextSort(this.actor, "passive")}]);
     } else if (button.classList.contains("add-biography_card")) {
       const cls = getDocumentClass("Item");
-      return this.actor.createEmbeddedDocuments("Item", [{name: game.i18n.localize("SOTC.ItemNew"),type: "passive", system: {type: "biography"}}]);
+      return this.actor.createEmbeddedDocuments("Item", [{name: game.i18n.localize("SOTC.ItemNew"),type: "passive", system: {type: "biography"}, sort: getNextSort(this.actor, "biography")}]);
     }
 
     if (!item) {
@@ -1079,7 +954,7 @@ export class SotCActorSheet extends ActorSheet {
     }
 
     if (button.classList.contains("edit-passive_card")) {
-      return item.sheet.render({ force: true });
+      return item.sheet.render(true);
     }
 
     if (button.classList.contains("duplicate-passive_card")) {
@@ -1105,17 +980,13 @@ export class SotCActorSheet extends ActorSheet {
   }
 
   async _printPassive(item) {
-    const name    = item.name;
-    const raw     = item.system.details ?? "";
-    const actor   = item.actor ?? this.actor ?? null;
+    const name = item.name;
+    const details = item.system.details ?? "";
 
-    // Enrich: run through enrichModWithStatusIcons so inline icons and [+]
-    // apply buttons appear in the chat card, matching how skills look.
-    const details = enrichModWithStatusIcons(raw, actor);
-
+    // Current styling is mundane, doesn't need to be complicated for now
     const content = `
       <div class="sotc-passive-card">
-        <h3 style="margin:0; color: black; text-shadow: 1px 1px 2px white;">
+        <h3 style="margin-bottom: 4px; color: white; text-shadow: 0 0 5px #efc281, 0 0 5px #efc281;">
           ${name}
         </h3>
         <div class="sotc-passive-details">${details}</div>
@@ -1124,14 +995,15 @@ export class SotCActorSheet extends ActorSheet {
 
     return ChatMessage.create({
       user: game.user.id,
-      speaker: ChatMessage.getSpeaker({ actor }),
+      speaker: ChatMessage.getSpeaker({ actor: item.actor }),
       content
     });
   }
 
   /* -------------------------------------------- */
   // I rather shamelessly stole this. Please review it later to see if this STUFF (no cursing) actually works or how it actually works, me.
-  // I went back and checked it, and I believe it works just fine. The logic of it is all sensible.
+  // Check 1: I went back and checked it, and I believe it works just fine. The logic of it is all sensible.
+  // Check 1.5: I've now gone back and corrected it. There were some issues, such as runaway values.
   /** @inheritdoc */
   async _updateObject(event, formData) {
     // The following blocks allow for addition and subtraction to the input fields that are most liable to change (I know that max stagger and health shouldn't change very often /
@@ -1155,17 +1027,21 @@ export class SotCActorSheet extends ActorSheet {
 
       const current = Number(foundry.utils.getProperty(this.actor, path) ?? 0);
 
-      // Lets algebraic inputs of +/-X be applied to the value
-      if (/^[+-]\d+$/.test(raw)) {
-        data[path] = current + Number(raw);
-      }
-      // Normal number overwrite
-      else if (!isNaN(raw)) {
-        data[path] = Number(raw);
-      }
-      // Disregard input if not a normal number of algebraic +/-X
-      else {
-        delete data[path];
+      // Added this condition so that when you're at -X it doesn't suddenly become 2*-X. This makes the negatives not runaway
+      //  allowing the positives to do their thing.
+      if ((current !== Number(raw) || (Number(raw) > 0))) {
+        // Lets algebraic inputs of +/-X be applied to the value
+        if (/^[+-]\d+$/.test(raw)) {
+          data[path] = current + Number(raw);
+        }
+        // Normal number overwrite
+        else if (!isNaN(raw)) {
+          data[path] = Number(raw);
+        }
+        // Disregard input if not a normal number of algebraic +/-X
+        else {
+          delete data[path];
+        }
       }
     }
 
@@ -1210,7 +1086,7 @@ export class SotCActorSheet extends ActorSheet {
     return r.toMessage({
       user: game.user.id,
       speaker: ChatMessage.getSpeaker({ actor: this.actor }),
-      flavor: `<h3>${item.name}</h3><h3>${button.text()}</h3>`
+      flavor: `<h3 style="margin-bottom: 4px; color: white; text-shadow: 0 0 5px #efc281, 0 0 5px #efc281;">${item.name}</h3><h3>${button.text()}</h3>`
     });
   }
 
@@ -1226,7 +1102,7 @@ export class SotCActorSheet extends ActorSheet {
     const content = `
       <form class="test_dialog" style="background-color: black; color: #efc281; padding: 0px;">
         <div class="test_dialog_box" style="padding: 8px;">
-          <h3>${attribute_key.charAt(0).toUpperCase() + attribute_key.slice(1)} Attempt</h3>
+          <h3 style="margin-bottom: 4px; color: white; text-shadow: 0 0 5px #efc281, 0 0 5px #efc281;">${attribute_key.charAt(0).toUpperCase() + attribute_key.slice(1)} Attempt</h3>
           <div style="text-align: center; margin-top: 8px; display: flex;">
             <span style="align-self: center;">Number of Dice: </span>
             <div style="flex: 1;display: flex;flex-direction: column;">
@@ -1262,7 +1138,7 @@ export class SotCActorSheet extends ActorSheet {
       default: "roll"
     }, {
       classes: ["sotc_attribute_roll_dialog"]  // allows our custom black background styling
-    }).render({ force: true });
+    }).render(true);
     
   }
 
@@ -1282,7 +1158,7 @@ export class SotCActorSheet extends ActorSheet {
     // Build message
     const message = `
       <div class="attribute-roll">
-        <h3>${attribute_key.charAt(0).toUpperCase() + attribute_key.slice(1)} Attempt</h3>
+        <h3 style="margin-bottom: 4px; color: white; text-shadow: 0 0 5px #efc281, 0 0 5px #efc281;">${attribute_key.charAt(0).toUpperCase() + attribute_key.slice(1)} Attempt</h3>
         <p>${num_attempts}d10 vs. ${attribute_key.charAt(0).toUpperCase() + attribute_key.slice(1)} (${attribute_value})</p>
         <p>Results: [ ${results.join(", ")} ]</p>
         ${result_text}
@@ -1297,6 +1173,7 @@ export class SotCActorSheet extends ActorSheet {
       content: message,
       rolls: [roll],
       type: CONST.CHAT_MESSAGE_TYPES.ROLL,
+      sound: CONFIG.sounds.dice,
       whisper: rollMode === "private" || rollMode === "gmroll" ? ChatMessage.getWhisperRecipients("GM") : [],
       blind: rollMode === "blindroll",
     });
@@ -1323,12 +1200,82 @@ export class SotCActorSheet extends ActorSheet {
     event.dataTransfer.setData("text/plain", JSON.stringify({
       type: "Item",
       uuid: item.uuid,
+      actorId: this.actor.id,
+      itemId: item.id,
+      itemType: item.type,
       sotcCopy: true
     }));
   }
 
   async _onDrop(event) {
-    const data = TextEditor.getDragEventData(event);
+    event.preventDefault();
+
+    // This info is all loaded up by onDragItem above
+    const data = JSON.parse(event.dataTransfer.getData("text/plain"));
+
+    // If this is not the payload that we're getting from dragging
+    if (data?.type === "Item" && data.sotcCopy && data.actorId === this.actor.id) {
+    // If we're dropped by another actor, we allow foundry to do its usual shenanigans
+
+      // But if we're the SAME actor, then we gotta reorder it
+      // First, get our item that we're dragging
+      const source_item = this.actor.items.get(data.itemId);
+      if (!source_item) return;
+
+      // Identify where we've dragged the skill TO, so that we can correctly insert it into the list
+      const target_card = event.target.closest("[data-item-id]");
+      if (!target_card) return;
+      const target_item = this.actor.items.get(target_card.dataset.itemId);
+      if (!target_item) return;
+
+      // It shouldn't be possible, but we want to make sure that we're dropping skills onto skills, etc
+      if (source_item.type !== target_item.type) return;
+
+      // Items of the same type
+      const siblings = this.actor.items.filter(
+        i => i.type === source_item.type
+      );
+
+      // Set up the update with our item now correctly ordered
+      const sorting_updates = SortingHelpers.performIntegerSort(
+        source_item,
+        {
+          target: target_item,
+          siblings
+        }
+      );
+
+      const updates = sorting_updates.map(u => ({
+        _id: u.target.id,
+        ...u.update
+      }));
+      
+      // Then update the actor's items, which should now be reodered
+      return this.actor.updateEmbeddedDocuments(
+        "Item",
+        updates
+      );
+    } else {
+      // _onDrop returns an array (at least in v11) <- Check this for v13 before you push the update dummy (obviously I'll check it... right?)
+      const dropped_stuff = await super._onDrop(event);
+      if (!dropped_stuff.length) return;
+      // Should be the first item that we care about, though it should also only ever be one item? 
+      //  Well, at least with what I've done. If you're looking encountering sorting errors with some module you're doing, hopefully you can
+      //  find this spot and do some fiddling about. Here's some keywords to help you ctrl + f: SORT SORT SORT SORT SORT SORT SORT DROP DROP DROP DROP DROP
+      //  Pretty helpful, no? lol.
+      const item = dropped_stuff[0];
+      // Anyways, update the item so that it abides by the new actor's current maxsort, putting it to the back of the list.
+      //  This produces a bit of a flicker, which is kinda awk and makes me wonder if there's a better way to go about this
+      //  If I could better parse foundry's documentation maybe I'd find something perfect for this.
+      await item.update({
+        sort: getNextSort(this.actor, item.type)
+      })
+    }
+  }
+}
+    /*
+
+    TextEditor.getDragEventData(event);
 
     // OUR custom copy behavior
     if (data?.type === "Item" && data.sotcCopy) {
@@ -1344,4 +1291,4 @@ export class SotCActorSheet extends ActorSheet {
     // EVERYTHING ELSE → let Foundry handle it
     return super._onDrop(event);
   }
-}
+  */
