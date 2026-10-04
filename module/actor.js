@@ -72,7 +72,7 @@ export class SotCActor extends Actor {
     for (const status of statuses) {
       const { effect, target, potency_flat = 0, potency = 0, count = 0 } = status.system;
       const sign = effect === "Increase" ? 1 : -1;
-      const bonus = (potency_flat + potency * count) * sign;
+      const bonus = (potency_flat + potency * count) * sign * (1 - null_power);
 
       switch (target) {
         case "all dice power": modifiers.all_mod += bonus; break;
